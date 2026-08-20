@@ -137,5 +137,6 @@ sudo cat /sys/kernel/debug/tracing/trace_pipe
 - [blazesym](https://github.com/libbpf/blazesym) — 地址符号化库
 - [eBPF 官方文档](https://ebpf.io/)
 - [BPF CO-RE 参考指南](https://nakryiko.com/posts/bpf-core-reference-guide/)
+- [bpf-developer-tutorial].(https://github.com/eunomia-bpf/bpf-developer-tutorial)
 
 
