@@ -1,0 +1,189 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#include "blazesym.h"
+#include "blazesym_api.h"
+
+#define MAX_MODULES 256
+#define MAX_LINE    512
+
+typedef struct {
+    uint64_t start;
+    uint64_t end;
+    char     path[256];
+} module_t;
+
+int resolve_symbols(int pid,
+                    const uint64_t *addrs, size_t addr_cnt,
+                    sym_info_t *results)
+{
+    if (!addrs || !results || addr_cnt == 0)
+        return -1;
+
+    memset(results, 0, addr_cnt * sizeof(sym_info_t));
+
+    for (size_t i = 0; i < addr_cnt; i++)
+        results[i].addr = addrs[i];
+
+    char maps_path[64];
+    snprintf(maps_path, sizeof(maps_path), "/proc/%d/maps", pid);
+    FILE *fp = fopen(maps_path, "r");
+    if (!fp)
+        return (int)addr_cnt;
+
+    module_t modules[MAX_MODULES];
+    int mod_cnt = 0;
+    char line[MAX_LINE];
+
+    while (fgets(line, sizeof(line), fp) && mod_cnt < MAX_MODULES) {
+        uint64_t start, end;
+        char perms[8], fpath[256] = {0};
+        unsigned long long off;
+        unsigned int maj, min;
+        unsigned long inode;
+
+        int n = sscanf(line, "%lx-%lx %7s %llx %x:%x %lu %255s",
+                       &start, &end, perms, &off, &maj, &min, &inode, fpath);
+        if (n < 6)
+            continue;
+        if (inode == 0 || fpath[0] == '\0')// 只有有inode的模块才需要解析符号
+            continue;
+        if (perms[2] != 'x')// 只有可执行模块才需要解析符号
+            continue;
+
+        int dup = 0;
+        for (int j = 0; j < mod_cnt; j++) {// 检查模块是否已存在, 如果已存在, 则跳过
+            if (strcmp(modules[j].path, fpath) == 0) {
+                dup = 1;
+                break;
+            }
+        }
+        if (dup)
+            continue;
+
+        modules[mod_cnt].start = start;
+        modules[mod_cnt].end   = end;
+        strncpy(modules[mod_cnt].path, fpath, sizeof(modules[mod_cnt].path) - 1);
+        mod_cnt++;
+    }
+    fclose(fp);
+
+    if (mod_cnt == 0)
+        return (int)addr_cnt;
+
+    struct blaze_symbolizer_opts sym_opts = {
+        .type_size   = sizeof(sym_opts),
+        .code_info   = true,
+        .inlined_fns = true,
+    };
+    blaze_symbolizer *sym = blaze_symbolizer_new_opts(&sym_opts);
+    if (!sym)
+        return (int)addr_cnt;
+
+    for (int m = 0; m < mod_cnt; m++) {
+        uint64_t mod_addrs[128];
+        int mod_addr_idx[128];
+        int mod_addr_cnt = 0;
+
+        for (size_t i = 0; i < addr_cnt; i++) {
+            if (addrs[i] >= modules[m].start && addrs[i] < modules[m].end) {
+                if (mod_addr_cnt < 128) {
+                    mod_addrs[mod_addr_cnt]    = addrs[i] - modules[m].start;
+                    mod_addr_idx[mod_addr_cnt] = (int)i;
+                    mod_addr_cnt++;
+                }
+                 /* 始终填充模块名和偏移 */
+                strncpy(results[i].module, modules[m].path,
+                        sizeof(results[i].module) - 1);
+                results[i].module_offset = addrs[i] - modules[m].start;
+            }
+        }
+
+        if (mod_addr_cnt == 0)
+            continue;
+
+        struct blaze_symbolize_src_elf src = {
+            .type_size  = sizeof(src),
+            .path       = modules[m].path,
+            .debug_syms = true,
+        };
+
+        const struct blaze_syms *syms =
+            blaze_symbolize_elf_virt_offsets(sym, &src, mod_addrs, mod_addr_cnt);
+
+        if (!syms)
+            continue;
+
+        for (int k = 0; k < (int)syms->cnt && k < mod_addr_cnt; k++) {
+            int idx = mod_addr_idx[k];
+            const struct blaze_sym *s = &syms->syms[k];
+
+            if (s->name)
+                strncpy(results[idx].name, s->name, sizeof(results[idx].name) - 1);
+            if (s->module)
+                strncpy(results[idx].module, s->module, sizeof(results[idx].module) - 1);
+            results[idx].module_offset = s->offset;
+
+            if (s->code_info.file) {
+                strncpy(results[idx].src_path, s->code_info.file,
+                        sizeof(results[idx].src_path) - 1);
+                results[idx].src_line = s->code_info.line;
+            }
+        }
+
+        blaze_syms_free(syms);
+    }
+
+    blaze_symbolizer_free(sym);
+    return (int)addr_cnt;
+}
+
+int resolve_kernel_symbols(const uint64_t *addrs, size_t addr_cnt,
+                           sym_info_t *results)
+{
+    if (!addrs || !results || addr_cnt == 0)
+        return -1;
+
+    memset(results, 0, addr_cnt * sizeof(sym_info_t));
+
+    for (size_t i = 0; i < addr_cnt; i++)
+        results[i].addr = addrs[i];
+
+    struct blaze_symbolizer_opts sym_opts = {
+        .type_size   = sizeof(sym_opts),
+        .code_info   = true,
+        .inlined_fns = true,
+    };
+    blaze_symbolizer *sym = blaze_symbolizer_new_opts(&sym_opts);
+    if (!sym)
+        return (int)addr_cnt;
+
+    struct blaze_symbolize_src_kernel src = {
+        .type_size = sizeof(src),
+    };
+
+    const struct blaze_syms *syms =
+        blaze_symbolize_kernel_abs_addrs(sym, &src, addrs, addr_cnt);
+
+    if (syms) {
+        for (size_t i = 0; i < syms->cnt && i < addr_cnt; i++) {
+            const struct blaze_sym *s = &syms->syms[i];
+
+            if (s->name)
+                strncpy(results[i].name, s->name, sizeof(results[i].name) - 1);
+            if (s->module)
+                strncpy(results[i].module, s->module, sizeof(results[i].module) - 1);
+
+            if (s->code_info.file) {
+                strncpy(results[i].src_path, s->code_info.file,
+                        sizeof(results[i].src_path) - 1);
+                results[i].src_line = s->code_info.line;
+            }
+        }
+        blaze_syms_free(syms);
+    }
+
+    blaze_symbolizer_free(sym);
+    return (int)addr_cnt;
+}

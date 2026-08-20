@@ -1,0 +1,58 @@
+TARGET = profile_stack
+ARCH = $(shell uname -m | sed 's/x86_64/x86/' | sed 's/aarch64/arm64/')
+
+BPF_TARGET = ${TARGET:=.bpf}
+BPF_C = ${BPF_TARGET:=.c}
+BPF_OBJ = ${BPF_TARGET:=.o}
+
+USER_C = ${TARGET:=.c}
+USER_SKEL = ${TARGET:=.skel.h}
+
+COMMON_H = ${TARGET:=.h}
+
+BLAZESYM_LIB = /home/jin/test/blazesym/target/release 
+BLAZESYM_API_LIB = /home/jin/arm64_lib/bpf-example/blazesym_src/x86
+LIBBPF_LIB = /home/jin/test/bpf-developer-tutorial/libbpf/src
+
+LDFLAGS = -L$(BLAZESYM_API_LIB) -lblazesym_api \
+		-L$(BLAZESYM_LIB) -lblazesym_c \
+		-L$(LIBBPF_LIB) -lbpf \
+		-lelf \
+		-lz \
+		-lpthread -ldl \
+		-Wl,-rpath,$(BLAZESYM_LIB) \
+		-Wl,-rpath,$(BLAZESYM_API_LIB) \
+		-Wl,-rpath,$(LIBBPF_LIB) \
+		
+
+INCLUDE = -I/home/jin/arm64_lib/bpf-example/blazesym_src/ \
+		 -I/home/jin/test/blazesym/capi/include \
+		 -I/home/jin/test/bpf-developer-tutorial/libbpf/blazesym_src
+
+all: $(TARGET) $(BPF_OBJ)
+.PHONY: all
+
+$(TARGET): $(USER_C) $(USER_SKEL) $(COMMON_H)
+	${CC} -Wall -o $(TARGET) $(USER_C) \
+		$(INCLUDE) \
+		$(LDFLAGS)
+
+$(BPF_OBJ): %.o: $(BPF_C) vmlinux.h $(COMMON_H)
+	clang \
+	    -target bpf \
+	    -D __BPF_TRACING__ \
+        -D __TARGET_ARCH_$(ARCH) \
+	    -Wall \
+	    -O2 -g -o $@ -c $<
+	llvm-strip -g $@
+
+$(USER_SKEL): $(BPF_OBJ)
+	bpftool gen skeleton $< > $@
+
+vmlinux.h:
+	ln -sf ../profile/vmlinux.h vmlinux.h
+
+clean:
+	rm -f $(TARGET) $(BPF_OBJ) $(USER_SKEL) vmlinux.h
+
+.PHONY: all clean
