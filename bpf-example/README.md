@@ -1,4 +1,3 @@
-
 ## bpf-example 各子项目 eBPF 知识点总结
 
 ---
@@ -176,27 +175,40 @@
 
 ---
 
-## 总览表
+### 13. `sockops` — Socket 操作拦截与消息重定向
 
-| 文件夹 | 程序类型 | Map 类型 | 核心 eBPF 能力 |
-|---|---|---|---|
-| `biopattern` | tracepoint | HASH | CO-RE, 原子操作 |
-| `bpftrace` | perf_event | STACK_TRACE, HASH | 栈追踪, 火焰图 |
-| `crash_trace` | tracepoint | RINGBUF | 栈追踪, 内核内存读取 |
-| `hide` | tracepoint(syscall) | HASH, PROG_ARRAY, RINGBUF | tail call, 用户内存读写 |
-| `lsm-connect` | LSM | (无) | LSM 安全策略 |
-| `memleak` | uprobe/uretprobe | HASH, STACK_TRACE | 用户态函数挂载, CO-RE |
-| `profile` | perf_event | RINGBUF | 栈追踪, 内核内存读取 |
-| `socket-http` | socket | RINGBUF | skb 数据读取, 字符串匹配 |
-| `tc` | TC | (无) | 直接包解析 |
-| `tcpstates` | tracepoint, fentry | HASH, PERF_EVENT_ARRAY | fentry, CO-RE, 直方图 |
-| `usdt` | USDT | HASH, RINGBUF | USDT 探针参数读取 |
-| `xdp` | XDP | (无) | 最早数据路径包处理 |
+sockops 项目演示了如何使用 **sockmap/sockhash** 机制实现 TCP 连接追踪和 socket 级别的消息重定向。包含两个 BPF 程序：
 
----
+#### `bpf_contrack.bpf.c` — 连接追踪
 
-**共涉及 8 种 BPF 程序类型**：tracepoint, perf_event, uprobe/uretprobe, socket, TC, XDP, LSM, fentry, USDT
+| 知识点 | 说明 |
+|---|---|
+| **SEC("sockops")** | `BPF_PROG_TYPE_SOCK_OPS` — 挂载到 cgroup，监控该 cgroup 内所有 socket 操作事件 |
+| **`bpf_program__attach_cgroup`** | 用户态将 sockops 程序附加到 **cgroup v2**，cgroup 定义监控范围 |
+| **`struct bpf_sock_ops`** | sockops 上下文，包含 `family`, `op`, `remote_ip4`, `local_ip4`, `remote_port`, `local_port` 等字段 |
+| **`BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB`** | 被动连接建立事件（服务端 accept） |
+| **`BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB`** | 主动连接建立事件（客户端 connect） |
+| **`BPF_MAP_TYPE_SOCKHASH`** | sockhash 类型的 map，key 为自定义五元组 `struct sock_key`，value 为 socket 引用 |
+| **`bpf_sock_hash_update`** | 将新建立的 TCP 连接信息写入 sockhash map，`BPF_NOEXIST` 标志防止覆盖 |
+| **`bpf_htonl` / `bpf_ntohl`** | BPF 内置网络字节序转换函数 |
+| **`bpf_printk`** | 调试日志输出到 `/sys/kernel/debug/tracing/trace_pipe` |
 
-**共涉及 5 种 Map 类型**：HASH, RINGBUF, STACK_TRACE, PERF_EVENT_ARRAY, PROG_ARRAY
+#### `bpf_redirect.bpf.c` — 消息重定向
 
-**核心技术栈**：CO-RE (BPF_CORE_READ / bpf_core_type_exists)、BPF skeleton (bpftool gen skeleton)、libbpf 用户态加载、blazesym 符号解析
+| 知识点 | 说明 |
+|---|---|
+| **SEC("sk_msg")** | `BPF_PROG_TYPE_SK_MSG` — 当消息发送到 sockhash map 中的 socket 时触发 |
+| **`bpf_prog_attach`** + `BPF_SK_MSG_VERDICT` | 用户态将 sk_msg 程序附加到 sockhash map fd 上（libbpf 无高层 API，需用底层 syscall 封装） |
+| **`bpf_prog_detach2`** | 对应 `bpf_prog_attach` 的 detach 操作 |
+| **`struct sk_msg_md`** | sk_msg 上下文，包含 `remote_ip4`, `local_ip4`, `remote_port`, `local_port`, `family` 等 |
+| **`bpf_msg_redirect_hash`** | 将消息重定向到 sockhash map 中匹配 key 的目标 socket，`BPF_F_INGRESS` 标志表示走 ingress 路径 |
+| **`SK_PASS`** | 返回值：放行消息，不做重定向 |
+
+#### 用户态程序 `sockops_exp.c`
+
+| 知识点 | 说明 |
+|---|---|
+| **`bpf_map__reuse_fd`** | 同一进程内两个 BPF 对象共享同一个 sockhash map（sockops 写入，sk_msg 读取） |
+| **多 skeleton 加载** | 同时加载两个独立的 BPF 对象（`bpf_contrack_bpf` + `bpf_redirect_bpf`），分别管理 |
+
+#### 架构流程
