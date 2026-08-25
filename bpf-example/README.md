@@ -212,3 +212,38 @@ sockops 项目演示了如何使用 **sockmap/sockhash** 机制实现 TCP 连接
 | **多 skeleton 加载** | 同时加载两个独立的 BPF 对象（`bpf_contrack_bpf` + `bpf_redirect_bpf`），分别管理 |
 
 #### 架构流程
+
+---
+
+### 14. `funclatency` — 函数延迟直方图统计
+
+funclatency 项目用于测量指定内核函数或用户态函数的执行延迟，并以 log2 直方图的形式输出统计结果。支持 kprobe（内核函数）和 uprobe（用户态函数）两种挂载方式。
+
+#### `funclatency.bpf.c`
+
+| 知识点 | 说明 |
+|---|---|
+| **kprobe / kretprobe** | `SEC("kprobe/dummy_kprobe")` + `SEC("kretprobe/dummy_kretprobe")` — 通过 `bpf_program__attach_kprobe` 在运行时动态附加到目标内核函数 |
+| **uprobe / uretprobe** | 用户态通过 `bpf_program__attach_uprobe_opts` 动态附加到用户态函数，支持 PID 过滤 |
+| **`BPF_KPROBE` / `BPF_KRETPROBE`** | 宏简化 kprobe/kretprobe 的参数获取和返回值获取 |
+| **`bpf_ktime_get_ns`** | 获取纳秒时间戳，在 entry 记录起始时间，在 exit 计算函数耗时 |
+| **BPF_MAP_TYPE_HASH** | `starts` map：以 PID 为 key 存储函数入口时间戳，关联 entry 和 exit 两次触发 |
+| **`bpf_map_update_elem`** | 在 entry 中将当前 PID 和起始时间写入 map |
+| **`bpf_map_lookup_elem`** | 在 exit 中查找 entry 记录的起始时间 |
+| **`__sync_fetch_and_add`** | 原子操作，无锁累加直方图槽位计数（支持并发更新） |
+| **全局数组 `hist`** | `__u32 hist[MAX_SLOTS]` — BPF 全局数组作为直方图存储，从 bss 段直接读取 |
+| **`log2l` 对数分桶** | 使用 `bits.bpf.h` 中的高效 log2 算法，将纳秒级延迟映射到 2 的幂次桶 |
+| **`const volatile` 配置** | `targ_tgid` 和 `units` 作为可配置参数，从用户态通过 rodata 段设置 |
+
+#### 用户态程序 `funclatency.c`
+
+| 知识点 | 说明 |
+|---|---|
+| **`bpf_program__attach_kprobe`** | 动态附加 kprobe/kretprobe 到指定内核函数（第二参数 `retprobe` 区分入口/返回） |
+| **`bpf_program__attach_uprobe_opts`** | 动态附加 uprobe/uretprobe 到用户态二进制，通过 `bpf_uprobe_opts` 指定函数名 |
+| **`LIBBPF_OPTS`** | 宏初始化 `bpf_object_open_opts`，使用默认选项打开 BPF 对象 |
+| **rodata 段写入** | `obj->rodata->units` 和 `obj->rodata->targ_tgid` 在加载前写入用户配置 |
+| **bss 段读取** | `obj->bss->hist` 直接从 BPF 全局数组读取直方图数据（Linux 5.7+ 支持） |
+| **log2 直方图打印** | `print_log2_hist` 按 2 的幂次区间输出分布，用星号 `*` 可视化频率 |
+| **SIGINT 信号处理** | 通过 `sigaction` 注册信号处理器，实现优雅退出 |
+| **argp 参数解析** | 使用 GNU argp 库解析命令行参数（`-m` 毫秒、`-u` 微秒、`-p` PID、`-d` 时长、`-i` 间隔） |
