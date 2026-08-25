@@ -1,4 +1,4 @@
-TARGET = sockops_exp
+TARGET = funclatency
 ARCH = arm64
 CROSS_COMPILE = aarch64-linux-gnu-
 CC = ${CROSS_COMPILE}gcc
