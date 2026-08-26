@@ -4,29 +4,22 @@
 #include <errno.h>
 #include <unistd.h>
 #include <net/if.h>
+#include <sys/mman.h>
 #include <arpa/inet.h>
 
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
 
-#include "xdp-tcpdump.skel.h"  // Generated skeleton header
+#include "xdp-tcpdump.skel.h"
 #include "xdp-tcpdump.h"
 
-// Callback function to handle events from the ring buffer
-static int handle_event(void *ctx, void *data, size_t data_sz)
+static void print_event(struct tcp_event *event)
 {
-    if (data_sz < sizeof(struct tcp_event)) {
-        fprintf(stderr, "Received incomplete TCP event\n");
-        return 0;
-    }
-
-    struct tcp_event *event = data;
     if (event->header_len < 20 || event->header_len > MAX_TCP_HEADER_BYTES) {
         fprintf(stderr, "Invalid TCP header length: %u\n", event->header_len);
-        return 0;
+        return;
     }
 
-    // Parse the raw TCP header bytes
     struct tcphdr {
         uint16_t source;
         uint16_t dest;
@@ -45,19 +38,16 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
         uint16_t window;
         uint16_t check;
         uint16_t urg_ptr;
-        // Options and padding may follow
     } __attribute__((packed));
 
     struct tcphdr *tcp = (struct tcphdr *)event->header;
 
-    // Convert fields from network byte order to host byte order
     uint16_t source_port = ntohs(tcp->source);
     uint16_t dest_port = ntohs(tcp->dest);
     uint32_t seq = ntohl(tcp->seq);
     uint32_t ack_seq = ntohl(tcp->ack_seq);
     uint16_t window = ntohs(tcp->window);
 
-    // Extract flags
     uint8_t flags = 0;
     flags |= (tcp->fin) ? 0x01 : 0x00;
     flags |= (tcp->syn) ? 0x02 : 0x00;
@@ -79,19 +69,19 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
     printf("\n");
 
     printf("Payload:\n");
-    for(int i = 0; i < event->payload_len; i++){
+    for (int i = 0; i < event->payload_len; i++) {
         printf("%02x ", event->payload[i]);
     }
     printf("\n");
-    return 0;
 }
 
 int main(int argc, char **argv)
 {
     struct xdp_tcpdump_bpf *skel;
-    struct ring_buffer *rb = NULL;
+    struct arena_layout *layout = NULL;
     int ifindex;
     int err;
+    __u32 last_idx = 0;
 
     if (argc != 2)
     {
@@ -107,7 +97,6 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    /* Open and load BPF application */
     skel = xdp_tcpdump_bpf__open();
     if (!skel)
     {
@@ -115,7 +104,6 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    /* Load & verify BPF programs */
     err = xdp_tcpdump_bpf__load(skel);
     if (err)
     {
@@ -123,7 +111,6 @@ int main(int argc, char **argv)
         goto cleanup;
     }
 
-    /* Attach XDP program */
     err = xdp_tcpdump_bpf__attach(skel);
     if (err)
     {
@@ -131,7 +118,6 @@ int main(int argc, char **argv)
         goto cleanup;
     }
 
-    /* Attach the XDP program to the specified interface */
     skel->links.xdp_pass = bpf_program__attach_xdp(skel->progs.xdp_pass, ifindex);
     if (!skel->links.xdp_pass)
     {
@@ -142,32 +128,41 @@ int main(int argc, char **argv)
 
     printf("Successfully attached XDP program to interface %s\n", ifname);
 
-    /* Set up ring buffer polling */
-    rb = ring_buffer__new(bpf_map__fd(skel->maps.rb), handle_event, NULL, NULL);
-    if (!rb)
+    /* mmap the arena map into userspace */
+    int arena_fd = bpf_map__fd(skel->maps.arena);
+    size_t arena_sz = ARENA_PAGES * 4096;
+    layout = mmap(NULL, arena_sz, PROT_READ | PROT_WRITE, MAP_SHARED, arena_fd, 0);
+    if (layout == MAP_FAILED)
     {
-        fprintf(stderr, "Failed to create ring buffer\n");
-        err = -1;
+        fprintf(stderr, "Failed to mmap arena: %s\n", strerror(errno));
+        err = -errno;
         goto cleanup;
     }
 
-    printf("Start polling ring buffer\n");
+    printf("Start polling arena (mmap'd shared memory)\n");
 
-    /* Poll the ring buffer */
+    /* Poll the arena write_index for new events */
     while (1)
     {
-        err = ring_buffer__poll(rb, -1);
-        if (err == -EINTR)
-            continue;
-        if (err < 0)
+        __u32 cur_idx = __atomic_load_n(&layout->write_index, __ATOMIC_ACQUIRE);
+
+        while (last_idx < cur_idx)
         {
-            fprintf(stderr, "Error polling ring buffer: %d\n", err);
-            break;
+            __u32 slot = last_idx % MAX_ARENA_EVENTS;
+            struct tcp_event *event = &layout->events[slot];
+
+            if (event->header_len >= 20 && event->header_len <= MAX_TCP_HEADER_BYTES)
+                print_event(event);
+
+            last_idx++;
         }
+
+        usleep(10000);
     }
 
 cleanup:
-    ring_buffer__free(rb);
+    if (layout && layout != MAP_FAILED)
+        munmap(layout, arena_sz);
     xdp_tcpdump_bpf__destroy(skel);
     return -err;
 }

@@ -5,11 +5,11 @@
 
 #define ETH_P_IP 0x0800
 
-// Define the ring buffer map
 struct {
-    __uint(type, BPF_MAP_TYPE_RINGBUF);
-    __uint(max_entries, 1 << 24);  // 16 MB buffer
-} rb SEC(".maps");
+    __uint(type, BPF_MAP_TYPE_ARENA);
+    __uint(map_flags, BPF_F_MMAPABLE);
+    __uint(max_entries, ARENA_PAGES);
+} arena SEC(".maps");
 
 // Helper function to check if the packet is TCP
 static bool is_tcp(struct ethhdr *eth, void *data_end)
@@ -88,11 +88,20 @@ int xdp_pass(struct xdp_md *ctx)
         return XDP_PASS;
     }
 
-    // Reserve a fixed-size event because bpf_ringbuf_reserve requires a constant size
-    struct tcp_event *event = bpf_ringbuf_reserve(&rb, sizeof(*event), 0);
-    if (!event) {
-        return XDP_PASS;  // If reservation fails, skip processing
-    }
+    // Get pointer to arena memory. The arena map variable acts as a base pointer.
+    // Use __sync_fetch_and_add to atomically claim a slot in the circular buffer.
+    struct arena_layout *layout = (struct arena_layout *)&arena;
+    if (!layout)
+        return XDP_PASS;
+
+    bpf_spin_lock(&layout->lock);
+    __u32 idx = layout->write_index +1;
+    bpf_spin_unlock(&layout->lock);
+    __u32 slot = idx % MAX_ARENA_EVENTS;
+
+    struct tcp_event *event = &layout->events[slot];
+    if (!event)
+        return XDP_PASS;
     //tcp数据的首地址
     char *tcp_data_start = (char *)tcp + tcp_header_bytes;                                                                                                                  
     if ((void *)tcp_data_start > data_end) {
@@ -116,13 +125,12 @@ int xdp_pass(struct xdp_md *ctx)
         if(i >= data_len)
             break;
         if((void *)tcp_data_start + i + 1 > data_end){
-            bpf_ringbuf_discard(event, 0);
             return XDP_PASS;
         }
         unsigned char byte = *((unsigned char *)tcp_data_start + i);
         event->payload[i] = byte;
     }
-    //bpf_probe_read_kernel(event->payload, data_len, tcp_data_start);
+
 #if 0
     for (int i = 0; i < MAX_TCP_HEADER_BYTES; i++) {
         if (i >= tcp_header_bytes)
@@ -137,10 +145,8 @@ int xdp_pass(struct xdp_md *ctx)
         unsigned char byte = *((unsigned char *)tcp + i);
         event->header[i] = byte;
     }
- #endif   
-    // Submit the data to the ring buffer
-    bpf_ringbuf_submit(event, 0);
-
+ #endif
+    // Arena write is complete — userspace will see write_index advance
     // Optional: Print a debug message (will appear in kernel logs)
     bpf_printk("Captured TCP header (%u bytes)", tcp_header_bytes);
 
