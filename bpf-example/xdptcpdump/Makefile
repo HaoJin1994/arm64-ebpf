@@ -20,11 +20,13 @@ LIBBPF_LIB = $(EBPF_DIR)/lib
 ELFUTILS_LIB = $(EBPF_DIR)/lib
 ZLIB_LIB = $(EBPF_DIR)/lib
 
+ARM_LIBBPF_LIB = /home/jin/arm64_lib/lib
+
 LDFLAGS = -L$(LIBBPF_LIB) -lbpf \
 	  -L$(ELFUTILS_LIB) -lelf \
 	  -L$(ZLIB_LIB) -lz \
 	  -lpthread -ldl  	\
-	  -Wl,-rpath,$(LIBBPF_LIB) 
+	  -Wl,-rpath,$(ARM_LIBBPF_LIB) 
 
 INCLUDE = -I$(EBPF_DIR)/libbpf/install/include \
 	  -I./

@@ -1,0 +1,1 @@
+savedcmd_bpf_memcpy_kfunc.ko := aarch64-linux-gnu-ld -r -EL  -maarch64elf -z noexecstack --build-id=sha1  -T /home/jin/imx8m_image/linux-imx-lf-6.18.y/scripts/module.lds -o bpf_memcpy_kfunc.ko bpf_memcpy_kfunc.o bpf_memcpy_kfunc.mod.o .module-common.o

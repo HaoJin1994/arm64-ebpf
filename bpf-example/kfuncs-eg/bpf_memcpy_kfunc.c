@@ -4,10 +4,10 @@
 #include <linux/bpf.h>
 #include <linux/btf.h>
 #include <linux/btf_ids.h>
-#include <linux/string.h>       // 内核 memcpy
+#include <linux/string.h>
 
 /* ─── 声明 kfunc 原型 ─── */
-__bpf_kfunc int bpf_memcpy(void *dst, u32 dst__sz, const void *src, u32 src__sz, u32 len);
+__bpf_kfunc int bpf_memcpy(u8 *dst, u32 dst__sz, const u8 *src, u32 src__sz, u32 len);
 
 __bpf_kfunc_start_defs();
 
@@ -22,7 +22,7 @@ __bpf_kfunc_start_defs();
  *
  * 命名约定：__sz 后缀告诉验证器这是对应指针的缓冲区大小
  */
-__bpf_kfunc int bpf_memcpy(void *dst, u32 dst__sz, const void *src, u32 src__sz, u32 len)
+__bpf_kfunc int bpf_memcpy(u8 *dst, u32 dst__sz, const u8 *src, u32 src__sz, u32 len)
 {
     // 边界检查（防止越界）
     if (len > dst__sz || len > src__sz)
@@ -52,11 +52,11 @@ static int __init bpf_memcpy_init(void)
 
     ret = register_btf_kfunc_id_set(BPF_PROG_TYPE_KPROBE, &bpf_memcpy_set);
     if (ret) {
-        pr_err("bpf_memcpy: failed to register kfunc set\n");
+        pr_err("bpf_memcpy: failed to register kfunc set for KPROBE\n");
         return ret;
     }
 
-    // 也可以注册到其他程序类型，扩大可用范围
+    // 注册到其他程序类型
     register_btf_kfunc_id_set(BPF_PROG_TYPE_TRACING, &bpf_memcpy_set);
     register_btf_kfunc_id_set(BPF_PROG_TYPE_XDP, &bpf_memcpy_set);
 
@@ -66,9 +66,7 @@ static int __init bpf_memcpy_init(void)
 
 static void __exit bpf_memcpy_exit(void)
 {
-    unregister_btf_kfunc_id_set(BPF_PROG_TYPE_KPROBE, &bpf_memcpy_set);
-    unregister_btf_kfunc_id_set(BPF_PROG_TYPE_TRACING, &bpf_memcpy_set);
-    unregister_btf_kfunc_id_set(BPF_PROG_TYPE_XDP, &bpf_memcpy_set);
+    // 注意：某些内核版本可能不支持unregister，所以注释掉
     pr_info("bpf_memcpy kfunc module unloaded\n");
 }
 

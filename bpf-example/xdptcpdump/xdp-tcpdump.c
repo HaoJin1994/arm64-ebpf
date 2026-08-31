@@ -77,12 +77,13 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
     printf("  Flags: 0x%02x\n", flags);
     printf("  Window Size: %u\n", window);
     printf("\n");
-
+#if 1
     printf("Payload:\n");
     for(int i = 0; i < event->payload_len; i++){
         printf("%02x ", event->payload[i]);
     }
     printf("\n");
+#endif
     return 0;
 }
 

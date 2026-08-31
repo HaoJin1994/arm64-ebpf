@@ -1,0 +1,1 @@
+savedcmd_Module.symvers :=  /home/jin/imx8m_image/linux-imx-lf-6.18.y/scripts/mod/modpost -M -m -b        -o Module.symvers -T modules.order -i /home/jin/imx8m_image/linux-imx-lf-6.18.y/Module.symvers -e 

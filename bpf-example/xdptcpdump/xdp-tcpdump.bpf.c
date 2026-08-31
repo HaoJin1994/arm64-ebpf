@@ -54,7 +54,7 @@ int xdp_pass(struct xdp_md *ctx)
     struct iphdr *ip = (struct iphdr *)(eth + 1);
 
     // Calculate IP header length
-    int ip_hdr_len = ip->ihl * 4;
+    __u32 ip_hdr_len = ip->ihl * 4;
     if (ip_hdr_len < sizeof(struct iphdr)) {
         return XDP_PASS;
     }
@@ -93,16 +93,25 @@ int xdp_pass(struct xdp_md *ctx)
     if (!event) {
         return XDP_PASS;  // If reservation fails, skip processing
     }
+
+    
+
     //tcp数据的首地址
     char *tcp_data_start = (char *)tcp + tcp_header_bytes;                                                                                                                  
     if ((void *)tcp_data_start > data_end) {
+        bpf_ringbuf_discard(event, 0);
+        return XDP_PASS;
+    }
+    if (total_len < (ip_hdr_len + tcp_header_bytes)) {
+        bpf_ringbuf_discard(event, 0);
         return XDP_PASS;
     }
     __u32 data_len = total_len - ip_hdr_len - tcp_header_bytes;
     if(data_len > 0 && (void *)(tcp_data_start + data_len) > data_end) {
+        bpf_ringbuf_discard(event, 0);
         return XDP_PASS;
     }                                                           
-
+    
     event->header_len = tcp_header_bytes;
     __builtin_memset(event->header, 0, sizeof(event->header));
 
@@ -111,33 +120,13 @@ int xdp_pass(struct xdp_md *ctx)
     bpf_probe_read_kernel(event->header, tcp_header_bytes, (void *)tcp);
    
     event->payload_len = data_len;
+
     
-    for(int i = 0; i < MAX_PAYLOAD_BYTES; i++){
-        if(i >= data_len)
-            break;
-        if((void *)tcp_data_start + i + 1 > data_end){
-            bpf_ringbuf_discard(event, 0);
-            return XDP_PASS;
-        }
-        unsigned char byte = *((unsigned char *)tcp_data_start + i);
-        event->payload[i] = byte;
-    }
-    //bpf_probe_read_kernel(event->payload, data_len, tcp_data_start);
-#if 0
-    for (int i = 0; i < MAX_TCP_HEADER_BYTES; i++) {
-        if (i >= tcp_header_bytes)
-            break;
-
-        if ((void *)tcp + i + 1 > data_end) {
-            bpf_ringbuf_discard(event, 0);
-            return XDP_PASS;
-        }
-
-        // Accessing each byte safely within bounds
-        unsigned char byte = *((unsigned char *)tcp + i);
-        event->header[i] = byte;
-    }
- #endif   
+    if(data_len > MAX_PAYLOAD_BYTES)
+        data_len = MAX_PAYLOAD_BYTES;
+    if(data_len > 0)
+        bpf_probe_read_kernel(event->payload, data_len, tcp_data_start);
+   
     // Submit the data to the ring buffer
     bpf_ringbuf_submit(event, 0);
 
