@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-#if 0
+#if 1
 #include "vmlinux.h"
 #include <bpf/bpf_core_read.h>
 #include <bpf/bpf_endian.h>
@@ -59,7 +59,7 @@ int tcp_link_status(struct bpf_iter__tcp *ctx)
 
 	dst_addr = BPF_CORE_READ(sk, skc_daddr);
 	src_addr = BPF_CORE_READ(sk, skc_rcv_saddr);
-	dst_port = BPF_CORE_READ(sk, skc_dport);
+	dst_port = bpf_ntohs(BPF_CORE_READ(sk, skc_dport));
 	src_port = BPF_CORE_READ(sk, skc_num);
 
 	if (target_addr && dst_addr != target_addr && src_addr != target_addr)
@@ -130,7 +130,7 @@ int tcp_link_status(struct bpf_iter__tcp *ctx)
 
     dst_addr = BPF_CORE_READ(sk, skc_daddr);
     src_addr = BPF_CORE_READ(sk, skc_rcv_saddr);
-    dst_port = BPF_CORE_READ(sk, skc_dport);
+    dst_port = bpf_ntohs(BPF_CORE_READ(sk, skc_dport));
     src_port = BPF_CORE_READ(sk, skc_num);
 
     if (target_addr && dst_addr != target_addr && src_addr != target_addr)

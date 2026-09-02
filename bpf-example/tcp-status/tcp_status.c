@@ -138,7 +138,7 @@ cleanup:
 int main(int argc, char **argv)
 {
 	struct tcp_status_bpf *skel = NULL;
-	struct in_addr destination;
+	struct in_addr destination = {0};
 	int err;
 
 	err = parse_args(argc, argv);
