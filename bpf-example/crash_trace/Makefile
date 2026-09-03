@@ -14,15 +14,21 @@ USER_SKEL = ${TARGET:=.skel.h}
 
 COMMON_H = ${TARGET:=.h}
 
-BLAZESYM_LIB = /home/jin/arm64_lib/lib
-BLAZESYM_API_LIB = /home/jin/arm64_lib/bpf-example/blazesym_src/
-LIBBPF_LIB = /home/jin/arm64_lib/lib
-ELFUTILS_LIB = /home/jin/arm64_lib/lib
-ZLIB_LIB = /home/jin/arm64_lib/lib
+PROJECT_DIR = $(shell pwd)
+EBPF_DIR = $(PROJECT_DIR)/../../
 
-BLAZESYM_INCLUDE = /home/jin/arm64_lib/blazesym/capi/include 
-BLAZESYM_API_INCLUDE = /home/jin/arm64_lib/bpf-example/blazesym_src/
-LIBBPF_INCLUDE = /home/jin/arm64_lib/libbpf/install/include
+
+LIBBPF_LIB = $(EBPF_DIR)/libbpf_v1_7/src
+ELFUTILS_LIB = $(EBPF_DIR)/lib
+ZLIB_LIB = $(EBPF_DIR)/lib
+
+BLAZESYM_LIB =  $(EBPF_DIR)/lib
+BLAZESYM_API_LIB =  $(EBPF_DIR)/bpf-example/blazesym_src/
+
+
+BLAZESYM_INCLUDE = $(EBPF_DIR)/blazesym/capi/include 
+BLAZESYM_API_INCLUDE = $(EBPF_DIR)/bpf-example/blazesym_src/
+LIBBPF_INCLUDE = $(EBPF_DIR)/libbpf/install/include
 
 
 LDFLAGS = -L$(BLAZESYM_API_LIB) -lblazesym_api \
@@ -59,7 +65,7 @@ $(USER_SKEL): $(BPF_OBJ)
 	bpftool gen skeleton $< > $@
 
 vmlinux.h:
-	bpftool btf dump file /home/jin/arm64_lib/vmlinux format c > vmlinux.h
+	bpftool btf dump file $(EBPF_DIR)/vmlinux format c > vmlinux.h
 
 clean:
 	rm -f $(TARGET) $(BPF_OBJ) $(USER_SKEL)

@@ -247,3 +247,85 @@ funclatency 项目用于测量指定内核函数或用户态函数的执行延�
 | **log2 直方图打印** | `print_log2_hist` 按 2 的幂次区间输出分布，用星号 `*` 可视化频率 |
 | **SIGINT 信号处理** | 通过 `sigaction` 注册信号处理器，实现优雅退出 |
 | **argp 参数解析** | 使用 GNU argp 库解析命令行参数（`-m` 毫秒、`-u` 微秒、`-p` PID、`-d` 时长、`-i` 间隔） |
+
+---
+
+### 15. `tcx` — TCX (Traffic Control eXpress) 入口/出口流量处理
+
+TCX 是 Linux 6.6+ 引入的新型 BPF 挂载点，替代旧的 TC BPF。支持多个程序按序链式执行，通过 `BPF_F_BEFORE`/`BPF_F_AFTER` 控制排序。
+
+#### `tcx_demo.bpf.c`
+
+| 知识点 | 说明 |
+|---|---|
+| **SEC("tcx/ingress")** | `BPF_PROG_TYPE_TCX` — 挂载到网卡 ingress 路径，比 TC clsact 更轻量 |
+| **`struct __sk_buff`** | TCX 层的包上下文，包含 `data`, `data_end`, `len`, `protocol`, `ifindex` 等字段 |
+| **直接包解析 (DPA)** | 通过 `data`/`data_end` 指针直接解析以太网头、IP 头、UDP 头 |
+| **边界检查** | 逐层检查 `(void *)(hdr + 1) > data_end`，确保内存访问安全 |
+| **`TCX_NEXT`** | 返回值 -1：将数据包传递给链中下一个 TCX 程序 |
+| **`TCX_PASS`** | 返回值 0：终止链，放行数据包到内核网络栈 |
+| **全局变量 (bss 段)** | `stats_hits`, `classifier_hits`, `last_len` 等 — 用户态可读写，用于统计和调试 |
+| **`bpf_ntohs` / `bpf_htons`** | BPF 内置网络字节序转换 |
+
+#### 用户态程序 `tcx_demo.c`
+
+| 知识点 | 说明 |
+|---|---|
+| **`bpf_program__attach_tcx`** | libbpf 高层 API 附加 TCX 程序到指定网卡 ifindex |
+| **`BPF_F_BEFORE`** | 通过 `bpf_tcx_opts` 指定程序插入到链中某个程序之前，实现多程序编排 |
+| **`bpf_prog_query_opts`** | 查询网卡上已附加的 BPF 程序链（需 `BPF_TCX_INGRESS` 枚举值） |
+| **`prog_cnt`** | 输入+输出参数：输入时设置最大查询数量，输出时返回实际附加的程序数 |
+| **`LIBBPF_OPTS`** | 宏初始化 `bpf_prog_query_opts` 和 `bpf_tcx_opts` 结构体 |
+
+---
+
+### 16. `kfuncs-eg` — BPF kfunc 内核函数注册与调用
+
+kfuncs-eg 演示如何编写内核模块注册自定义 BPF kfunc（内核函数），让 BPF 程序安全调用内核函数。
+
+#### 内核模块 `bpf_memcpy_kfunc.c`
+
+| 知识点 | 说明 |
+|---|---|
+| **`__bpf_kfunc`** | 标记函数为 BPF kfunc，使其可被 BPF 程序调用 |
+| **`__bpf_kfunc_start_defs` / `__bpf_kfunc_end_defs`** | 包裹 kfunc 定义区域，用于 BTF 识别 |
+| **`__sz` 后缀约定** | 参数名 `dst__sz` 中的 `__sz` 后缀告诉 BPF 验证器该参数是对应指针的缓冲区大小，用于自动边界检查 |
+| **`BTF_KFUNCS_START` / `BTF_KFUNCS_END`** | 定义 kfunc ID 集合，将 kfunc 注册到 BTF |
+| **`BTF_ID_FLAGS(func, ...)`** | 将函数添加到 kfunc ID 集合 |
+| **`register_btf_kfunc_id_set`** | 注册 kfunc 到指定程序类型（如 `BPF_PROG_TYPE_KPROBE`, `BPF_PROG_TYPE_TRACING`） |
+| **内核模块** | kfunc 必须以内核模块形式加载，通过 `insmod` 安装 |
+
+#### BPF 程序 `memcpy_test.bpf.c`
+
+| 知识点 | 说明 |
+|---|---|
+| **`__ksym`** | 声明外部内核符号，告诉 BPF 加载器该函数由内核模块提供 |
+| **`extern int bpf_memcpy(...) __ksym`** | 声明 kfunc 原型，使 BPF 程序可以调用它 |
+
+---
+
+### 17. `tcp-status` — TCP 连接状态迭代器
+
+使用 BPF iterator 遍历内核中所有 TCP socket，按目标地址/端口/状态过滤并输出连接信息。
+
+#### `tcp_status.bpf.c`
+
+| 知识点 | 说明 |
+|---|---|
+| **SEC("iter/tcp")** | `BPF_PROG_TYPE_TRACING` + `BPF_ITER_TCP` — 迭代内核所有 TCP socket |
+| **`struct bpf_iter__tcp`** | BPF iterator 上下文，包含 `sk_common`（`sock_common` 指针）和 `meta->seq`（seq_file 输出） |
+| **`BPF_CORE_READ`** | CO-RE 方式安全读取内核结构体字段（`skc_family`, `skc_state`, `skc_daddr` 等） |
+| **`BPF_SEQ_PRINTF`** | 向 `seq_file` 输出格式化字符串，用户态通过 `cat /sys/kernel/bpf/` 读取 |
+| **`BPF_SNPRINTF`** | 格式化字符串到缓冲区，`%pI4` 格式化 IPv4 地址 |
+| **`const volatile` 过滤参数** | `target_addr`, `target_port`, `target_state` 作为可配置过滤条件 |
+| **全局统计结构体** | `struct tcp_status_stats` 记录扫描数、匹配数、销毁数等 |
+
+#### 用户态程序 `tcp_status.c`
+
+| 知识点 | 说明 |
+|---|---|
+| **BPF iterator 链接** | 通过 `bpf_link__open` 方式附加 iterator 程序，自动创建 `/sys/kernel/bpf/` 下的伪文件 |
+| **`bpf_link__pin`** | 将 iterator 链接持久化到 BPF 文件系统，供 `cat` 读取 |
+| **`bpf_object__pin`** | 将 BPF 对象和 map 持久化到文件系统 |
+| **rodata 段写入** | 加载前通过 `skel->rodata->target_addr` 写入过滤参数 |
+| **getopt_long 参数解析** | 使用 `getopt_long` 解析 `--destination`, `--port`, `--apply` 等参数 |

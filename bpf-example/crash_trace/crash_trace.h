@@ -5,6 +5,7 @@
 
 #define MAX_STACK_DEPTH 50
 
+#if 0
 #define SEGV_MAPERR 1 /* 访问未映射的地址 */
 #define SEGV_ACCERR 2 /* 访问权限不足（如写只读内存） */
 
@@ -32,7 +33,7 @@
 #define FPE_FLTRES 6 /* 浮点不精确结果 */
 #define FPE_FLTINV 7 /* 无效浮点操作 */
 #define FPE_FLTSUB 8 /* 下标越界 */
-
+#endif
 struct crash_event
 {
     __u32 pid;
